@@ -6,6 +6,53 @@
 const std = @import("std");
 const http = std.http;
 
+const OllamaStreamingResponse = struct {
+    model: []const u8,
+    created_at: []const u8,
+    message: Message,
+    done: bool,
+
+    const Message = struct {
+        role: []const u8,
+        content: []const u8,
+        // TODO: Handle images
+    };
+};
+const OllamaStreamingFinalResponse = struct {
+    model: []const u8,
+    created_at: []const u8,
+    message: Message,
+    done: bool,
+    total_duration: u64,
+    load_duration: u64,
+    // prompt_eval_count: u64, This one is not present in the final response?
+    prompt_eval_duration: u64,
+    eval_count: u64,
+    eval_duration: u64,
+    const Message = struct {
+        role: []const u8,
+        content: []const u8,
+        // TODO: Handle images
+    };
+};
+const OllamaResponse = struct {
+    model: []const u8,
+    created_at: []const u8,
+    message: Message,
+    done: bool,
+    total_duration: u64,
+    load_duration: u64,
+    prompt_eval_count: u64,
+    prompt_eval_duration: u64,
+    eval_count: u64,
+    eval_duration: u64,
+
+    const Message = struct {
+        role: []const u8,
+        content: []const u8,
+        // TODO: Handle images
+    };
+};
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer std.debug.assert(gpa.deinit() == .ok);
@@ -25,6 +72,7 @@ pub fn main() !void {
     request.transfer_encoding = .chunked;
 
     try request.send();
+    const stream = true;
     try request.writeAll(
         \\{
         \\  "model": "dolphin-mixtral:8x7b-v2.5-q3_K_S",
@@ -33,34 +81,33 @@ pub fn main() !void {
         \\      "role": "user",
         \\      "content": "why is the sky blue?"
         \\    }
-        \\  ],
-        \\  "stream": false
+        \\  ]
         \\}
     );
     try request.finish();
     try request.wait();
 
-    const body = request.reader().readAllAlloc(allocator, 8192) catch unreachable;
-    defer allocator.free(body);
-    const OllamaResponse = struct {
-        model: []const u8,
-        created_at: []const u8,
-        message: Message,
-        done: bool,
-        total_duration: u64,
-        load_duration: u64,
-        prompt_eval_count: u64,
-        prompt_eval_duration: u64,
-        eval_count: u64,
-        eval_duration: u64,
+    const buffer = try allocator.alloc(u8, 8192);
+    defer allocator.free(buffer);
 
-        const Message = struct {
-            role: []const u8,
-            content: []const u8,
-        };
-    };
-    const parsed_json = try std.json.parseFromSlice(OllamaResponse, allocator, body, .{});
-    defer parsed_json.deinit();
+    if (stream) {
+        var done = false;
+        var len: usize = 0;
 
-    std.debug.print("{s}: {s}\n", .{ parsed_json.value.message.role, parsed_json.value.message.content });
+        while (!done) {
+            len = try request.read(buffer);
+            const parsed_response = std.json.parseFromSlice(OllamaStreamingResponse, allocator, buffer[0..len], .{}) catch break;
+            defer parsed_response.deinit();
+            done = parsed_response.value.done;
+            std.debug.print("{s}", .{parsed_response.value.message.content});
+        }
+        const parsed_final_response = try std.json.parseFromSlice(OllamaStreamingFinalResponse, allocator, buffer[0..len], .{});
+        defer parsed_final_response.deinit();
+    } else {
+        const body = request.reader().readAll(buffer) catch unreachable;
+        defer allocator.free(body);
+        const parsed_final_response = try std.json.parseFromSlice(OllamaResponse, allocator, body, .{});
+        defer parsed_final_response.deinit();
+        std.debug.print("{s}: {s}\n", .{ parsed_final_response.value.message.role, parsed_final_response.value.message.content });
+    }
 }
